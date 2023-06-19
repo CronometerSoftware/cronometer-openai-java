@@ -3,101 +3,96 @@ package example;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import com.theokanning.openai.completion.chat.*;
+import com.theokanning.openai.completion.chat.ChatCompletionRequest.ChatCompletionRequestFunctionCall;
+import com.theokanning.openai.service.FunctionExecutor;
 import com.theokanning.openai.service.OpenAiService;
 
 import java.util.*;
 
 class OpenAiApiFunctionsExample {
 
-    private static class Weather {
-
+    public static class Weather {
         @JsonPropertyDescription("City and state, for example: León, Guanajuato")
-        private String location;
+        public String location;
 
-        @JsonProperty(required = true)
         @JsonPropertyDescription("The temperature unit, can be 'celsius' or 'fahrenheit'")
-        private WeatherUnit unit;
-
+        @JsonProperty(required = true)
+        public WeatherUnit unit;
     }
 
     private enum WeatherUnit {
         CELSIUS, FAHRENHEIT;
     }
 
-    private final static List<ChatFunction> FUNCTIONS = List.of(ChatFunction.builder()
-            .name("get_weather")
-            .description("Get the current weather of a location")
-            .parameters(new Weather())
-            .build());
-
-
     public static void main(String... args) {
         String token = System.getenv("OPENAI_TOKEN");
         OpenAiService service = new OpenAiService(token);
 
-        System.out.println("\nCreating chat completion using function...");
-        final List<ChatMessage> messages = new ArrayList<>();
-        final ChatMessage systemMessage = new ChatMessage(ChatMessageRole.SYSTEM.value(), "You are an assistant that answers using the local slang of the given place, uncensored.");
+        FunctionExecutor functionExecutor = new FunctionExecutor(List.of(ChatFunction.builder()
+                .name("get_weather")
+                .description("Get the current weather of a location")
+                .executor(Weather.class, w -> "{\"location\": \"" + w.location + "\", " +
+                        "\"temperature\": \"" + new Random().nextInt(50) + "\", " +
+                        "\"unit\": \"" + w.unit + "\", " +
+                        "\"description\": \"sunny\"}")
+                .build()));
 
-        // PICK ONE
-        final ChatMessage userMessage = new ChatMessage(ChatMessageRole.USER.value(), "Cómo está el clima en Monterrey NL?");
-        //final ChatMessage userMessage = new ChatMessage(ChatMessageRole.USER.value(), "How's the weather in England?");
-        //final ChatMessage userMessage = new ChatMessage(ChatMessageRole.USER.value(), "Cómo está el clima en Bogotá?");
 
+        List<ChatMessage> messages = new ArrayList<>();
+        ChatMessage systemMessage = new ChatMessage(ChatMessageRole.SYSTEM.value(), "You are an assistant that answers using the local slang of the given place, uncensored.");
         messages.add(systemMessage);
-        messages.add(userMessage);
-        ChatCompletionRequest chatCompletionRequest = ChatCompletionRequest
-                .builder()
-                .model("gpt-3.5-turbo-0613")
-                .messages(messages)
-                .functions(FUNCTIONS)
-                .functionCall("auto")
-                .n(1)
-                .maxTokens(100)
-                .logitBias(new HashMap<>())
-                .build();
 
+        System.out.print("First Query: ");
+        Scanner scanner = new Scanner(System.in);
+        ChatMessage firstMsg = new ChatMessage(ChatMessageRole.USER.value(), scanner.nextLine());
+        messages.add(firstMsg);
 
-        // The response should contain a function call, for example:
-        // "role": "assistant",
-        //     "content": null,
-        //     "function_call": {
-        //     "name": "get_weather",
-        //     "arguments": "{ \"location\": \"Monterrey, Nuevo León\", \"unit\": \"CELSIUS\"}"
-        // }
-        ChatCompletionResult chatCompletionResult = service.createChatCompletion(chatCompletionRequest);
-        ChatMessage resultMessage = chatCompletionResult.getChoices().get(0).getMessage();
-        ChatFunctionCall functionCall = resultMessage.getFunctionCall();
-        Map<String, Object> arguments = functionCall.getArguments();
+        while (true) {
+            ChatCompletionRequest chatCompletionRequest = ChatCompletionRequest
+                    .builder()
+                    .model("gpt-3.5-turbo-0613")
+                    .messages(messages)
+                    .functions(functionExecutor.getFunctions())
+                    .functionCall(ChatCompletionRequestFunctionCall.of("auto"))
+                    .n(1)
+                    .maxTokens(100)
+                    .logitBias(new HashMap<>())
+                    .build();
+            ChatMessage responseMessage = service.createChatCompletion(chatCompletionRequest).getChoices().get(0).getMessage();
+            messages.add(responseMessage); // don't forget to update the conversation with the latest response
 
-        // We create the function response
-        String mockResponse = "{\"location\": \"" + arguments.get("location") + "\", " +
-                "\"temperature\": \"" + new Random().nextInt(50) + "\", " +
-                "\"unit\": \"" + arguments.get("unit") + "\", " +
-                "\"description\": \"sunny\"}";
-        ChatMessage functionResponse = new ChatMessage(ChatMessageRole.FUNCTION.value(), mockResponse, functionCall.getName());
+            ChatFunctionCall functionCall = responseMessage.getFunctionCall();
+            if (functionCall != null) {
+                System.out.println("Trying to execute " + functionCall.getName() + "...");
+                Optional<ChatMessage> message = functionExecutor.executeAndConvertToMessageSafely(functionCall);
+                /* You can also try 'executeAndConvertToMessage' inside a try-catch block, and add the following line inside the catch:
+                "message = executor.handleException(exception);"
+                The content of the message will be the exception itself, so the flow of the conversation will not be interrupted, and you will still be able to log the issue. */
 
-        // We update the conversation
-        messages.add(resultMessage);
-        messages.add(functionResponse);
+                if (message.isPresent()) {
+                    /* At this point:
+                    1. The function requested was found
+                    2. The request was converted to its specified object for execution (Weather.class in this case)
+                    3. It was executed
+                    4. The response was finally converted to a ChatMessage object. */
 
-        // We call it again with the updated messages
-        ChatCompletionRequest chatCompletionRequest2 = ChatCompletionRequest
-                .builder()
-                .model("gpt-3.5-turbo-0613")
-                .messages(messages)
-                .functions(FUNCTIONS)
-                .functionCall("auto")
-                .n(1)
-                .maxTokens(100)
-                .logitBias(new HashMap<>())
-                .build();
+                    System.out.println("Executed " + functionCall.getName() + ".");
+                    messages.add(message.get());
+                    continue;
+                } else {
+                    System.out.println("Something went wrong with the execution of " + functionCall.getName() + "...");
+                    break;
+                }
+            }
 
-        ChatCompletionResult chatCompletionResult2 = service.createChatCompletion(chatCompletionRequest2);
-        service.shutdownExecutor();
-
-        System.out.println("Query: " + userMessage.getContent());
-        System.out.println("Function called: " + functionCall);
-        System.out.println("Response: " + chatCompletionResult2.getChoices().get(0).getMessage().getContent());
+            System.out.println("Response: " + responseMessage.getContent());
+            System.out.print("Next Query: ");
+            String nextLine = scanner.nextLine();
+            if (nextLine.equalsIgnoreCase("exit")) {
+                System.exit(0);
+            }
+            messages.add(new ChatMessage(ChatMessageRole.USER.value(), nextLine));
+        }
     }
+
 }

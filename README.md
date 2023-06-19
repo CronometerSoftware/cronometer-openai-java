@@ -1,79 +1,12 @@
-
-# 🚀 Publishing to Local Maven Repository (⚠ Unofficial Version with Function Support)
-
-This repository is a fork of the original [com.theokanning.openai-gpt3-java](https://github.com/TheoKanning/openai-java)
-. While the changes in this fork are awaiting to be pulled into the official repository, you can use this unofficial
-version by installing it to your local Maven repository.
-
-This allows you to use the modified version "0.12.0-20240614" while retaining the same dependency group and artifact
-names, i.e., the group is still "com.theokanning.openai-gpt3-java" and the artifacts are "api", "client", and "service".
-
-### Installation Instructions
-
-#### For Linux/macOS
-
-1. After cloning or downloading this repository, navigate to its root directory.
-2. Make sure that the `publishToLocal.sh` script is executable. You can set the execute permission by running the
-   following command:
-
-```sh
-chmod +x publishToLocal.sh
-```
-
-3. Now, execute the script:
-
-```sh
-./publishToLocal.sh
-```
-
-#### For Windows
-
-1. After cloning or downloading this repository, navigate to its root directory.
-2. Execute the batch script by running the following command:
-
-```batch
-publishToLocal.bat
-```
-
-### Dependency Configuration
-
-Once the unofficial version is installed to your local Maven repository, you can use it in your project by adding the
-following dependencies in your build file (e.g., `pom.xml` for Maven, `build.gradle` for Gradle):
-
-For Maven:
-
-```xml
-
-<dependency>
-    <groupId>com.theokanning.openai-gpt3-java</groupId>
-    <artifactId>api|client|service</artifactId>
-    <version>0.12.0-20240614</version>
-</dependency>
-```
-
-For Gradle:
-
-```gradle
-implementation 'com.theokanning.openai-gpt3-java:api|client|service:0.12.0-20240614'
-```
-
-This will allow you to use the modified version of the library with the changes made in this fork.
-
---------------------------------------------------
-
 ![Maven Central](https://img.shields.io/maven-central/v/com.theokanning.openai-gpt3-java/client?color=blue)
 
-> ⚠️ Please switch to using the new 'service' library if you need to use OpenAiService. The old 'client' OpenAiService
-> is deprecated as of 0.10.0.  
-> ⚠️OpenAI has deprecated all Engine-based APIs.
-> See [Deprecated Endpoints](https://github.com/TheoKanning/openai-java#deprecated-endpoints) below for more info.
+> ⚠️ Please switch to using the new 'service' library if you need to use OpenAiService. The old 'client' OpenAiService is deprecated as of 0.10.0.  
+> ⚠️OpenAI has deprecated all Engine-based APIs. See [Deprecated Endpoints](https://github.com/TheoKanning/openai-java#deprecated-endpoints) below for more info.
 
 # OpenAI-Java
-
 Java libraries for using OpenAI's GPT apis. Supports GPT-3, ChatGPT, and GPT-4.
 
 Includes the following artifacts:
-
 - `api` : request/response POJOs for the GPT APIs.
 - `client` : a basic retrofit client for the GPT endpoints, includes the `api` module
 - `service` : A basic service class that creates and calls the client. This is the easiest way to get started.
@@ -161,6 +94,67 @@ Retrofit retrofit = defaultRetrofit(client, mapper);
 OpenAiApi api = retrofit.create(OpenAiApi.class);
 OpenAiService service = new OpenAiService(api);
 ```
+
+### Functions
+You can create your functions and define their executors easily using the ChatFunction class, along with any of your custom classes that will serve to define their available parameters. You can also process the functions with ease, with the help of an executor called FunctionExecutor.
+
+First we declare our function parameters:
+```java
+public class Weather {
+    @JsonPropertyDescription("City and state, for example: León, Guanajuato")
+    public String location;
+    @JsonPropertyDescription("The temperature unit, can be 'celsius' or 'fahrenheit'")
+    @JsonProperty(required = true)
+    public WeatherUnit unit;
+}
+public enum WeatherUnit {
+    CELSIUS, FAHRENHEIT;
+}
+```
+
+Next, we declare the function itself and associate it with an executor, in this example we will fake a response from some API:
+```java
+ChatFunction.builder()
+        .name("get_weather")
+        .description("Get the current weather of a location")
+        .executor(Weather.class, w -> "{\"location\": \"" + w.location + "\", " +
+            "\"temperature\": \"" + new Random().nextInt(50) + "\", " +
+            "\"unit\": \"" + w.unit + "\", " +
+            "\"description\": \"sunny\"}")
+        .build()
+```
+
+Then, we employ the FunctionExecutor object from the 'service' module to assist with execution and transformation into an object that is ready for the conversation:
+```java
+List<ChatFunction> functionList = // list with functions
+FunctionExecutor functionExecutor = new FunctionExecutor(functionList);
+
+List<ChatMessage> messages = new ArrayList<>();
+ChatMessage userMessage = new ChatMessage(ChatMessageRole.USER.value(), "Tell me the weather in Barcelona.");
+messages.add(userMessage);
+ChatCompletionRequest chatCompletionRequest = ChatCompletionRequest
+        .builder()
+        .model("gpt-3.5-turbo-0613")
+        .messages(messages)
+        .functions(functionExecutor.getFunctions())
+        .functionCall(new ChatCompletionRequestFunctionCall("auto"))
+        .maxTokens(256)
+        .build();
+
+ChatMessage responseMessage = service.createChatCompletion(chatCompletionRequest).getChoices().get(0).getMessage();
+ChatFunctionCall functionCall = responseMessage.getFunctionCall(); // might be null, but in this case it is a call to our 'get_weather' function.
+
+// "executeAndConvertToMessageSafely" converts the function's response to your custom object, executes it, gets the response, and then converts it to a ChatMessage object, ready to be added to the current conversation.
+Optional<ChatMessage> functionResponseMessage = functionExecutor.executeAndConvertToMessageSafely(functionCall);
+functionResponseMessage.ifPresentOrElse((response) -> {
+            // messages.add(response);
+        }, () -> {
+            // do something else
+        });
+```
+> **Note:** The `FunctionExecutor` class is part of the 'service' module.
+
+For a more in-depth look, refer to a conversational example that employs functions in: [OpenAiApiFunctionsExample.java](example/src/main/java/example/OpenAiApiFunctionsExample.java).
 
 ### Streaming thread shutdown
 If you want to shut down your process immediately after streaming responses, call `OpenAiService.shutdown()`.  
